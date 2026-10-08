@@ -1,0 +1,163 @@
+namespace Osysharp.LlmRouter;
+
+using Osysharp.Llm;
+
+/// One model this policy may serve with, and WHAT IT CAN DO — declared by the app that registers the router, because
+/// only the app knows which models it has credentials for.
+///
+/// ⚠ The capability flags are FILTERS, not preferences: a model with `Vision = false` cannot serve a vision task at any
+/// price, and this router will deny rather than substitute. `Quality` is a RANK the app assigns — it exists so a floor
+/// can be expressed ("reasoning does not go below 2"), not as a score anyone should read as absolute.
+public class RoutedModel {
+  /// The model's name, exactly as `app.Models` / `app.DefaultModel` declares it — this is what the platform serves with.
+  public string Name = "";
+
+  /// Relative cost. Any unit will do as long as it is the same unit for every model here: the router only ever COMPARES
+  /// them. Cost per million input tokens is the usual choice.
+  public decimal Cost = 0;
+
+  /// A rank this app assigns, higher being better. Used only against a declared floor.
+  public int Quality = 0;
+
+  /// What it can do. Each false is a hard exclusion for a task that needs it.
+  public bool Tools = false;
+  public bool Vision = false;
+  public bool StructuredOutput = false;
+
+  /// The largest prompt it accepts, in tokens. 0 means the app declares no limit and the router will not filter on it —
+  /// deliberately not a guess, because guessing a window low denies work that would have run.
+  public int MaxInputTokens = 0;
+
+  /// Whether this model has a cheap batch endpoint. A `Batch` task prefers one; nothing is ever DENIED for lacking it.
+  public bool Batch = false;
+}
+
+/// The lowest `Quality` that may serve one kind of work. A kind with no floor accepts anything that clears the filters.
+public class QualityFloor {
+  public LlmTaskKind Kind = LlmTaskKind.Generate;
+  public int Quality = 0;
+}
+
+/// ⭐ A COST-TIERED ROUTER — the policy most apps actually want, in the order the decisions have to happen.
+///
+/// ```osy
+/// app.LlmRouter = new CostTieredRouter {
+///   Models = [
+///     new RoutedModel { Name = "claude-haiku-4-5",  Cost = 1,  Quality = 1, Tools = true, StructuredOutput = true, Batch = true },
+///     new RoutedModel { Name = "claude-sonnet-5",   Cost = 15, Quality = 3, Tools = true, Vision = true, StructuredOutput = true },
+///   ],
+///   Floors = [ new QualityFloor { Kind = LlmTaskKind.Reason, Quality = 3 } ],
+/// };
+/// ```
+///
+/// The order is the whole design, and none of the four steps commutes:
+///   1. FILTER on capability and context window. A model that cannot do the work is out, whatever it costs.
+///   2. FILTER on the quality floor for this KIND of work. A floor is a refusal to be cheap about something, so it is
+///      applied before price, not weighed against it.
+///   3. HONOUR the call site's request by NARROWING only — if what it asked for survived the filters, serve that; if it
+///      asked for something this policy does not admit, DENY rather than override.
+///   4. ORDER what is left cheapest-first, preferring a batch endpoint when nobody is waiting.
+///
+/// ⛔ Pure, and it has to be: no reads, no writes, no egress, and the compiler refuses a body that tries. Everything it
+/// knows is on the two fields above, set where the router is registered.
+public class CostTieredRouter : ILlmRouter {
+  /// Every model this policy may serve with. Empty is a configuration mistake and the router says so rather than
+  /// silently denying every call with no explanation.
+  public List<RoutedModel> Models = [];
+
+  /// Quality floors per kind of work. Omit a kind to let anything that clears the filters serve it.
+  public List<QualityFloor> Floors = [];
+
+  public LlmRoutingDecision Route(LlmTaskFacts facts) {
+    var decision = new LlmRoutingDecision();
+    decision.RuleId = "cost-tiered:1";
+
+    if (Models.Count == 0) {
+      decision.Denial = "this app's router declares no models. Add them where it is registered: "
+        + "`app.LlmRouter = new CostTieredRouter { Models = [ new RoutedModel { Name = \"…\" } ] };`";
+      return decision;
+    }
+
+    // ── 1 + 2. THE FILTERS. Capability first, then the floor for this kind of work; each rejection carries its reason,
+    //    which is what makes a denial answerable rather than merely final.
+    var floor = FloorFor(facts.Kind);
+    var admissible = new List<RoutedModel>();
+    foreach (var model in Models) {
+      if (facts.NeedsTools && !model.Tools) {
+        Reject(decision, model, "this task needs tools and that model has none");
+      } else if (facts.NeedsVision && !model.Vision) {
+        Reject(decision, model, "this task needs vision and that model has none");
+      } else if (facts.NeedsStructuredOutput && !model.StructuredOutput) {
+        Reject(decision, model, "this task needs structured output and that model does not produce it");
+      } else if (model.MaxInputTokens > 0 && facts.InputTokens > model.MaxInputTokens) {
+        Reject(decision, model, "the prompt is larger than that model accepts");
+      } else if (model.Quality < floor) {
+        Reject(decision, model, $"below the quality floor this app sets for {facts.Kind} work");
+      } else {
+        admissible.Add(model);
+      }
+    }
+
+    if (admissible.Count == 0) {
+      decision.Denial = "no model this app declares can serve this task — see the rejections for why each was dropped. "
+        + "Declare a model that can, or lower the quality floor if that is what excluded them.";
+      return decision;
+    }
+
+    // ── 3. THE NARROWING RULE. A call site chooses among what the policy admits; it never adds to it.
+    if (facts.RequestedModel != null) {
+      foreach (var model in admissible) {
+        if (model.Name == facts.RequestedModel) {
+          decision.Ordered.Add(model.Name);
+          decision.RuleId = "cost-tiered:requested";
+          return decision;
+        }
+      }
+      decision.Denial = "this call asked for model '" + facts.RequestedModel + "', which this app's routing policy does "
+        + "not admit for this task. A call site may CHOOSE among the models the policy allows; it cannot add one.";
+      decision.RuleId = "cost-tiered:narrowing";
+      return decision;
+    }
+
+    // ── 4. CHEAPEST FIRST, batch preferred when nobody is waiting. A selection sort over a handful of models, in one
+    //    pass per position: a policy is a few entries long, and the ordering has to be TOTAL and stable to be replayable.
+    var wantsBatch = facts.LatencySensitivity == LlmLatencySensitivity.Batch;
+    var remaining = admissible;
+    while (remaining.Count > 0) {
+      var best = remaining[0];
+      foreach (var model in remaining) {
+        if (Prefer(model, best, wantsBatch)) { best = model; }
+      }
+      decision.Ordered.Add(best.Name);
+      var rest = new List<RoutedModel>();
+      foreach (var model in remaining) {
+        if (model.Name != best.Name) { rest.Add(model); }
+      }
+      remaining = rest;
+    }
+    return decision;
+  }
+
+  /// Whether `candidate` should be served before `incumbent`. Batch capability outranks price for a `Batch` task —
+  /// that is the point of a batch tier — and price decides everything else, with the declared order as the tie-break so
+  /// two equally-priced models always rank the same way.
+  private bool Prefer(RoutedModel candidate, RoutedModel incumbent, bool wantsBatch) {
+    if (wantsBatch && candidate.Batch != incumbent.Batch) { return candidate.Batch; }
+    return candidate.Cost < incumbent.Cost;
+  }
+
+  /// The floor this app sets for one kind of work, or 0 when it sets none.
+  private int FloorFor(LlmTaskKind kind) {
+    foreach (var floor in Floors) {
+      if (floor.Kind == kind) { return floor.Quality; }
+    }
+    return 0;
+  }
+
+  private void Reject(LlmRoutingDecision decision, RoutedModel model, string reason) {
+    var rejection = new LlmRejection();
+    rejection.Model = model.Name;
+    rejection.Reason = reason;
+    decision.Rejected.Add(rejection);
+  }
+}
