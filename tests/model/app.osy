@@ -1,0 +1,43 @@
+// A print shop: quick drafts on the cheap model, proofs on the middle one, anything that goes to press on the best.
+namespace PrintShop;
+
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+
+policy ReadsModelUsage   => true;
+policy ManagesModelSpend => true;
+
+/// The shop's policy — what `app.Llm` names, and what the tests ask directly.
+public CostTieredRouter ShopRouter() {
+  return new CostTieredRouter {
+    Models = [
+      new RoutedModel { Name = "Draft",  Cost = 1,  Quality = 1, Tools = true, StructuredOutput = true, Batch = true,
+                        InputPrice = 1, OutputPrice = 5, MaxOutputTokens = 1000, MaxInputTokens = 8000 },
+      new RoutedModel { Name = "Proof",  Cost = 3,  Quality = 2, Tools = true, StructuredOutput = true,
+                        InputPrice = 3, OutputPrice = 15, MaxOutputTokens = 1000 },
+      new RoutedModel { Name = "Press",  Cost = 10, Quality = 3, Tools = true, Vision = true, StructuredOutput = true,
+                        InputPrice = 10, OutputPrice = 50, MaxOutputTokens = 1000 },
+      new RoutedModel { Name = "Sorter", Cost = 0.1m, Quality = 0, Decides = true },
+    ],
+    Floors = [ new QualityFloor { Kind = LlmTaskKind.Reason, Quality = 2 } ],
+    StepFloors = [ new StepFloor { Step = LlmStep.Plan, Quality = 3 } ],
+  };
+}
+
+/// The names a decision orders, joined — and "DENIED: …" when it admits none.
+public string Order(LlmTaskFacts facts) {
+  var decision = ShopRouter().Route(facts);
+  return decision.Denial != null ? "DENIED: " + decision.Denial! : string.Join(" > ", decision.Ordered);
+}
+
+/// Why one model was dropped, or "" when it was not.
+public string WhyNot(string model, LlmTaskFacts facts) {
+  foreach (var r in ShopRouter().Route(facts).Rejected) { if (r.Model == model) { return r.Reason; } }
+  return "";
+}
+
+LlmResult Reason(string question, bool mayStepDown) {
+  var call = new LlmCall { Kind = LlmTaskKind.Reason, Scopes = ["job:poster"] };
+  if (mayStepDown) { call.OnLimit = LlmOnLimit.StepDown; }
+  return await Llm.Complete(RequestOf(question), call);
+}

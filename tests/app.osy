@@ -1,0 +1,8 @@
+// The producer's test project for Osysharp.LlmRouter — a print shop with three models and a policy over them. The
+// policy is asked directly (it is a pure function of the facts), and once through a real call, with scripted models.
+app PrintShop {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Llm@2;
+  use Osysharp.LlmRouter@0;
+}

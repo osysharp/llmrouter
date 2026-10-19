@@ -1,0 +1,18 @@
+// The shop's models and its routing. In a file of its own with no `namespace`, because an `app.X = …` statement's
+// value is resolved outside the file's namespace.
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+using PrintShop;
+
+app.Llm = new LlmSetup {
+  Models = [
+    new LlmModel { Name = "Draft",  Client = new ScriptedModel { Name = "Draft" },  Model = "scripted-draft",
+                   Price = new LlmPrice { Input = 1, Output = 5 }, MaxOutputTokens = 1000 },
+    new LlmModel { Name = "Proof",  Client = new ScriptedModel { Name = "Proof" },  Model = "scripted-proof",
+                   Price = new LlmPrice { Input = 3, Output = 15 }, MaxOutputTokens = 1000 },
+    new LlmModel { Name = "Press",  Client = new ScriptedModel { Name = "Press" },  Model = "scripted-press",
+                   Price = new LlmPrice { Input = 10, Output = 50 }, MaxOutputTokens = 1000 },
+    new LlmModel { Name = "Sorter", Decider = new ScriptedModel { Name = "Sorter" }, Model = "scripted-sorter" },
+  ],
+  Router = ShopRouter(),
+};

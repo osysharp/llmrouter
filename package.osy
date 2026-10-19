@@ -1,13 +1,15 @@
 // Osysharp.LlmRouter — a real routing policy for an app that declares more than one model: capability filters, a
-// quality floor per kind of work, and the cheapest model that clears them.
+// quality floor per kind of work and per step, a cost ceiling, and the cheapest model that clears them — in an order
+// that is also the order they are tried in when one fails.
 //
-// It asks for nothing. A router is a pure decision — no egress, no secret, no data — which is why it can be a package
-// with an empty grant list and still be the thing that decides where every one of an app's model calls goes.
+// It asks for nothing. A router is a pure decision — no outbound call, no secret, no data — which is why it can be a
+// package with an empty grant list and still be the thing that decides where every one of an app's model calls goes.
 package Osysharp.LlmRouter {
-  version     "0.1.0";
-  minPlatform "0.9.0";
-  summary     "a cost-tiered model router: hard capability filters, a quality floor per task kind, then cheapest-admissible.";
+  version     "0.3.0";
+  minPlatform "0.14.0";
+  summary     "a cost-tiered model router: hard capability filters, quality floors per task kind and per step, a cost ceiling a short budget steps down under, then cheapest-admissible — in an order that is the fallback order.";
 
   model "model/*.osy";
-  use Osysharp.Llm;
+  tests "tests";
+  use Osysharp.Llm@2;
 }

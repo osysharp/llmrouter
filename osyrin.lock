@@ -2,15 +2,5 @@
   "platform": {
     "version": "0.9.0"
   },
-  "entries": [
-    {
-      "name": "Osysharp.Llm",
-      "kind": "package",
-      "version": "1.0.0",
-      "hash": "sha256:b5fd349cbd9900411d5161c4a900ed175eb8b604077403a6dbb20a3e924bcb99",
-      "minPlatform": "0.9.0",
-      "shadow": "app-forkable",
-      "source": "workspace:Platform.Core/Dsl/OsySharp/Baseline/Capabilities/Llm"
-    }
-  ]
+  "entries": []
 }

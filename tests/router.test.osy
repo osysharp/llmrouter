@@ -1,0 +1,124 @@
+// Osysharp.LlmRouter — the policy, asked directly: what it orders for a set of facts, what it drops and why.
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+using PrintShop;
+
+[Test]
+void with_nothing_asked_the_cheapest_model_comes_first_and_the_rest_follow_as_fallbacks() {
+  Assert.Equal("Draft > Proof > Press", Order(new LlmTaskFacts()));
+  Assert.Equal("that model only makes typed decisions", WhyNot("Sorter", new LlmTaskFacts()));
+}
+
+[Test]
+void a_capability_the_task_needs_is_a_filter_whatever_the_price() {
+  Assert.Equal("Press", Order(new LlmTaskFacts { NeedsVision = true }));
+  Assert.Equal("this task needs vision and that model has none", WhyNot("Draft", new LlmTaskFacts { NeedsVision = true }));
+  // A prompt larger than the draft model takes.
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { InputTokens = 9000 }));
+}
+
+[Test]
+void a_floor_for_the_kind_of_work_for_the_step_and_from_the_call_each_apply_and_the_highest_wins() {
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { Kind = LlmTaskKind.Reason }));
+  Assert.Equal("Press", Order(new LlmTaskFacts { Step = LlmStep.Plan }));
+  Assert.Equal("Press", Order(new LlmTaskFacts { Kind = LlmTaskKind.Reason, Step = LlmStep.Plan }));
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { MinQuality = 2 }));
+  Assert.Equal("below the quality floor of 3 for this Generate work", WhyNot("Proof", new LlmTaskFacts { Step = LlmStep.Plan }));
+}
+
+[Test]
+void a_cost_ceiling_drops_every_model_whose_worst_case_is_dearer() {
+  // 2000 tokens in and up to 1000 out: 7000 on Draft, 21000 on Proof, 70000 on Press (millionths of a dollar).
+  var facts = new LlmTaskFacts { InputTokens = 2000, MaxCostMicros = 25000 };
+  Assert.Equal("Draft > Proof", Order(facts));
+  Assert.Equal("its worst case costs more than this call may spend", WhyNot("Press", facts));
+  // A shorter answer asked for is a smaller worst case: 2000 in and 100 out is 25000 on Press.
+  Assert.Equal("Draft > Proof > Press", Order(new LlmTaskFacts { InputTokens = 2000, MaxOutputTokens = 100, MaxCostMicros = 25000 }));
+  // A floor is not bought off by a ceiling: nothing admitted, and the denial says to look at the rejections.
+  var denied = Order(new LlmTaskFacts { Step = LlmStep.Plan, InputTokens = 2000, MaxCostMicros = 25000 });
+  Assert.Contains("DENIED: no model this app declares can serve this task", denied);
+}
+
+[Test]
+void a_call_site_may_only_narrow() {
+  Assert.Equal("Proof", Order(new LlmTaskFacts { RequestedModel = "Proof" }));
+  // Admitted in general, not for this task.
+  Assert.Contains("DENIED: this call asked for model 'Draft'", Order(new LlmTaskFacts { Kind = LlmTaskKind.Reason, RequestedModel = "Draft" }));
+  // Never declared.
+  Assert.Contains("DENIED: this call asked for model 'Enormous'", Order(new LlmTaskFacts { RequestedModel = "Enormous" }));
+}
+
+[Test]
+void a_decision_goes_to_the_model_built_for_it_with_the_chat_models_behind() {
+  Assert.Equal("Sorter > Draft > Proof > Press", Order(new LlmTaskFacts { NeedsDecision = true, Kind = LlmTaskKind.Decide }));
+}
+
+[Test]
+void asking_again_puts_a_better_model_than_last_time_first() {
+  Assert.Equal("Proof > Press > Draft", Order(new LlmTaskFacts { Attempt = 1, EscalatedFrom = "Draft" }));
+  Assert.Equal("Press > Draft > Proof", Order(new LlmTaskFacts { Attempt = 2, EscalatedFrom = "Proof" }));
+  Assert.Equal("cost-tiered:escalated", ShopRouter().Route(new LlmTaskFacts { Attempt = 1, EscalatedFrom = "Draft" }).RuleId);
+}
+
+[Test]
+void work_nobody_waits_for_prefers_a_batch_endpoint() {
+  var router = ShopRouter();
+  router.Models[1].Batch = true;       // Proof gains one; Draft has one; Press does not
+  router.Floors = [ new QualityFloor { Kind = LlmTaskKind.Summarize, Quality = 2 } ];
+  var order = router.Route(new LlmTaskFacts { Kind = LlmTaskKind.Summarize, LatencySensitivity = LlmLatencySensitivity.Batch }).Ordered;
+  Assert.Equal("Proof > Press", string.Join(" > ", order));
+}
+
+[Test]
+void the_fallbacks_a_policy_allows_are_capped_where_it_says() {
+  var router = ShopRouter();
+  router.Fallbacks = 1;
+  var decision = router.Route(new LlmTaskFacts());
+  Assert.Equal("Draft > Proof", string.Join(" > ", decision.Ordered));
+  router.Fallbacks = 0;
+  Assert.Equal("Draft", string.Join(" > ", router.Route(new LlmTaskFacts()).Ordered));
+}
+
+[Test]
+void a_router_with_no_models_says_so() {
+  var decision = new CostTieredRouter().Route(new LlmTaskFacts());
+  Assert.Contains("declares no models", decision.Denial!);
+  Assert.Equal(0, decision.Ordered.Count);
+}
+
+[Test]
+void the_same_facts_always_reach_the_same_decision() {
+  var facts = new LlmTaskFacts { Kind = LlmTaskKind.Reason, InputTokens = 1200, NeedsTools = true };
+  Assert.Equal(JsonSerializer.Serialize(ShopRouter().Route(facts)), JsonSerializer.Serialize(ShopRouter().Route(facts)));
+}
+
+// ── through a real call ─────────────────────────────────────────────────────────────────────────────────────────────
+
+[Test]
+void a_provider_that_fails_hands_the_call_to_the_next_model_in_the_policys_order() {
+  ScriptedAnswer.Stub((model, request) => {
+    if (model == "Proof") { throw new ExternalServiceException("scripted-proof is down"); }
+    return Scripted.Text("from " + model);
+  });
+  var result = Reason("Will this poster print in two colours?", false);
+  Assert.Equal("from Press", result.Text());
+  Assert.Equal(2, result.Attempts);
+  Assert.Equal("cost-tiered:2", result.RouteRule);
+}
+
+[Test]
+void a_short_budget_steps_down_to_the_model_the_ceiling_admits() {
+  ScriptedAnswer.Stub((model, request) => Scripted.Text("from " + model, 100, 100));
+  // The floor for reasoning admits Proof and Press. One cent for the job; Proof's worst case is a cent and a half.
+  SetBudget("job", "poster", LlmBudgetWindow.Total, 0.01m);
+  UnitOfWork.Commit();
+  // Told to stop, it stops…
+  Assert.Throws<LlmBudgetExceeded>(() => Reason("Will this poster print in two colours?", false));
+  // …and told to step down, the policy is asked again with what is left — and admits nothing under its own floor.
+  Assert.Throws<LlmBudgetExceeded>(() => Reason("Will this poster print in two colours?", true));
+  // With two cents, Proof fits and Press does not: Proof serves, Press is not on the list.
+  SetBudget("job", "poster", LlmBudgetWindow.Total, 0.02m);
+  UnitOfWork.Commit();
+  var result = Reason("Will this poster print in two colours?", false);
+  Assert.Equal("Proof", result.Model);
+}
