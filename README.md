@@ -138,3 +138,65 @@ be the thing that decides where all of an app's model calls go.
 ## See also
 
 [`Osysharp.Llm`](../llm) — the calls, the meter, budgets and what a router is handed.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+using PrintShop;
+
+[Test]
+void with_nothing_asked_the_cheapest_model_comes_first_and_the_rest_follow_as_fallbacks() {
+  Assert.Equal("Draft > Proof > Press", Order(new LlmTaskFacts()));
+  Assert.Equal("that model only makes typed decisions", WhyNot("Sorter", new LlmTaskFacts()));
+}
+```
+
+From [`tests/router.test.osy`](tests/router.test.osy).
+
+```osy
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+using PrintShop;
+
+[Test]
+void a_capability_the_task_needs_is_a_filter_whatever_the_price() {
+  Assert.Equal("Press", Order(new LlmTaskFacts { NeedsVision = true }));
+  Assert.Equal("this task needs vision and that model has none", WhyNot("Draft", new LlmTaskFacts { NeedsVision = true }));
+  // A prompt larger than the draft model takes.
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { InputTokens = 9000 }));
+}
+```
+
+From [`tests/router.test.osy`](tests/router.test.osy).
+
+```osy
+using Osysharp.Llm;
+using Osysharp.LlmRouter;
+using PrintShop;
+
+[Test]
+void a_floor_for_the_kind_of_work_for_the_step_and_from_the_call_each_apply_and_the_highest_wins() {
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { Kind = LlmTaskKind.Reason }));
+  Assert.Equal("Press", Order(new LlmTaskFacts { Step = LlmStep.Plan }));
+  Assert.Equal("Press", Order(new LlmTaskFacts { Kind = LlmTaskKind.Reason, Step = LlmStep.Plan }));
+  Assert.Equal("Proof > Press", Order(new LlmTaskFacts { MinQuality = 2 }));
+  Assert.Equal("below the quality floor of 3 for this Generate work", WhyNot("Proof", new LlmTaskFacts { Step = LlmStep.Plan }));
+}
+```
+
+From [`tests/router.test.osy`](tests/router.test.osy).
+
+## Learn more
+
+- [The Osysharp.LlmRouter reference](https://osysharp.com/reference/agent/kit-llm-router/)
+- [Osysharp.LlmRouter in the package catalogue](https://osysharp.com/packages/#osysharp-llmrouter)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
