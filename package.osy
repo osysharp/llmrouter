@@ -5,11 +5,11 @@
 // It asks for nothing. A router is a pure decision — no outbound call, no secret, no data — which is why it can be a
 // package with an empty grant list and still be the thing that decides where every one of an app's model calls goes.
 package Osysharp.LlmRouter {
-  version     "0.3.0";
-  minPlatform "0.14.0";
+  version     "0.4.0";
+  minPlatform "0.22.0";
   summary     "a cost-tiered model router: hard capability filters, quality floors per task kind and per step, a cost ceiling a short budget steps down under, then cheapest-admissible — in an order that is the fallback order.";
 
   model "model/*.osy";
   tests "tests";
-  use Osysharp.Llm@2;
+  use Osysharp.Llm@3;
 }

@@ -25,7 +25,7 @@ It has no user interface, so there is nothing to screenshot: it decides where ca
 // app.osy
 app Support {
   model "**/*.osy";
-  use Osysharp.Llm@2;
+  use Osysharp.Llm@3;
   use Osysharp.LlmRouter@0;
   use Osysharp.Models.Anthropic@1 { egress "api.anthropic.com"; }
 }
@@ -128,7 +128,7 @@ osy test kits/llm-router/tests
 ```
 package Osysharp.LlmRouter {
   version "0.2.0";
-  use Osysharp.Llm@2;
+  use Osysharp.Llm@3;
 }
 ```
 
